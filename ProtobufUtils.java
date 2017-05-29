@@ -1,4 +1,4 @@
-package com.datatonic.sky.sky_q_poc.protobuffer.util;
+package com.datatonic.gap.GAPPipeline.protobuffer.util;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -13,6 +13,7 @@ import com.google.common.base.CaseFormat;
 import com.google.protobuf.Descriptors.Descriptor;
 import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Message;
+import com.google.protobuf.Timestamp;
 
 public class ProtobufUtils {
 
@@ -116,11 +117,13 @@ public class ProtobufUtils {
 	// TODO: check repeated vs nested
 	// TODO: check naming conventions
 	public static Message makeMessage(TableRow tablerow, Message.Builder message) {
-		TableRow res = new TableRow();
 		List<FieldDescriptor> fields = message.getDescriptorForType().getFields();
 
 		for (FieldDescriptor f : fields) {
-			Object currentField = tablerow.get(CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, f.getName()));
+			// Object currentField =
+			// tablerow.get(CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL,
+			// f.getName()));
+			Object currentField = tablerow.get(f.getName());
 			if (currentField != null) {
 				if (f.getType().toString().toUpperCase().contains("STRING")) {
 					message.setField(f, String.valueOf(currentField));
@@ -131,13 +134,17 @@ public class ProtobufUtils {
 				} else if (f.getType().toString().toUpperCase().contains("INT64")) {
 					message.setField(f, Long.parseLong(String.valueOf(currentField)));
 				} else if (f.getType().toString().toUpperCase().contains("BOOL")) {
-					message.setField(f, Boolean.parseBoolean(String.valueOf(currentField)));
+					boolean b = Boolean.parseBoolean(String.valueOf(currentField));
+					message.setField(f, b);
 				} else if (f.getType().toString().toUpperCase().contains("FLOAT")
 						|| f.getType().toString().toUpperCase().contains("DOUBLE")) {
 					message.setField(f, Double.parseDouble(String.valueOf(currentField)));
 				} else if (f.getType().toString().toUpperCase().contains("MESSAGE")) {
 					if (f.isRepeated()) {
-						if (tablerow.get(f.getName()) != null && ((List<?>) currentField).size() > 0) {
+						// if
+						// (CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL,
+						// f.getName()) != null
+						if (f.getName() != null && ((List<?>) currentField).size() > 0) {
 							List<Message> m = new ArrayList<Message>();
 							for (Object o : (List<Object>) currentField) {
 								if (o.getClass() == TableRow.class) {
@@ -146,12 +153,13 @@ public class ProtobufUtils {
 									m.add(makeMessage((parseLinkedHashMapToTableRow((LinkedHashMap<String, Object>) o)),
 											message.newBuilderForField(f)));
 								}
-
 							}
 							message.setField(f, m);
 						}
 					} else if (tablerow
-							.get(CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL, f.getName())) != null) {
+							// .get(CaseFormat.UPPER_UNDERSCORE.to(CaseFormat.LOWER_CAMEL,
+							// f.getName())) != null) {
+							.get(f.getName()) != null) {
 						if (currentField.getClass() != TableRow.class) {
 							message.setField(f,
 									makeMessage(
@@ -161,6 +169,42 @@ public class ProtobufUtils {
 						} else {
 							message.setField(f, makeMessage((TableRow) currentField, message.newBuilderForField(f)));
 						}
+					}
+				}
+			}
+		}
+		return message.build();
+	}
+
+	public static Message makeMessage(String csvrow, Message.Builder message) {
+		List<FieldDescriptor> fields = message.getDescriptorForType().getFields();
+
+		String[] csvArray = csvrow.split(",");
+		for (int i = 0; i < fields.size(); i++) {
+			FieldDescriptor f = fields.get(i);
+			String currentField = csvArray[i];
+			if (currentField != null && currentField.length() > 0) {
+				// Convention: if name of protobuffer field starts with
+				// "timestamp", the type in Java will be a Joda Instant
+				// For now: suppose it's a UNIX timestamp in milliseconds
+				if (f.getType().toString().toUpperCase().contains("STRING")) {
+					message.setField(f, String.valueOf(currentField));
+				} else if (f.getType().toString().toUpperCase().contains("BYTES")) {
+					message.setField(f, currentField.getBytes());
+				} else if (f.getType().toString().toUpperCase().contains("INT32")) {
+					message.setField(f, Integer.parseInt(currentField));
+				} else if (f.getType().toString().toUpperCase().contains("INT64")) {
+					message.setField(f, Long.parseLong(currentField));
+				} else if (f.getType().toString().toUpperCase().contains("BOOL")) {
+					message.setField(f, Boolean.parseBoolean(currentField));
+				} else if (f.getType().toString().toUpperCase().contains("FLOAT")) {
+					message.setField(f, Float.parseFloat(currentField));
+				} else if (f.getType().toString().toUpperCase().contains("DOUBLE")) {
+					message.setField(f, Double.parseDouble(currentField));
+				} else if (f.getType().toString().toUpperCase().contains("MESSAGE")) {
+					if (f.getMessageType().getName().toUpperCase().contains("TIMESTAMP")) {
+						message.setField(f, Timestamp.newBuilder().setSeconds(Long.parseLong(currentField) / 1000)
+								.setNanos((int) ((Long.parseLong(currentField) % 1000) * 1000000)).build());
 					}
 				}
 			}
@@ -178,5 +222,36 @@ public class ProtobufUtils {
 			}
 		}
 		return out;
+	}
+
+	public static List<Object> getValueFromProtobuffer(String field, Message message) {
+		List<Object> result = new ArrayList<Object>();
+		String[] fieldHierarchy = field.split("\\.");
+
+		FieldDescriptor q = message.getDescriptorForType().findFieldByName(fieldHierarchy[0]);
+
+		if (q.isRepeated()) {
+			if (fieldHierarchy.length > 1) {
+				List<Message> m = (List<Message>) message.getField(q);
+				m.stream().forEach(i -> result
+						.addAll(getValueFromProtobuffer(field.substring(fieldHierarchy[0].length() + 1), i)));
+
+			} else {
+				List<Object> m = (List<Object>) message.getField(q);
+				result.addAll(m);
+
+			}
+		} else {
+			if (fieldHierarchy.length > 1) {
+				Message m = (Message) message.getField(q);
+				result.addAll(getValueFromProtobuffer(field.substring(fieldHierarchy[0].length() + 1), m));
+
+			} else {
+				Object o = message.getField(q);
+				result.add(o);
+
+			}
+		}
+		return result;
 	}
 }
