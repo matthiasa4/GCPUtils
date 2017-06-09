@@ -9,7 +9,6 @@ import java.util.stream.Collectors;
 import com.google.api.services.bigquery.model.TableFieldSchema;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.api.services.bigquery.model.TableSchema;
-import com.google.common.base.CaseFormat;
 import com.google.protobuf.Descriptors.Descriptor;
 import com.google.protobuf.Descriptors.FieldDescriptor;
 import com.google.protobuf.Message;
@@ -81,7 +80,7 @@ public class ProtobufUtils {
 
 		for (FieldDescriptor f : fields) {
 			String type = "STRING";
-			if (f.isRepeated() || (!f.isRepeated() && message.hasField(f))) {
+			if (!f.isRepeated() && message.hasField(f)) {
 				if (f.getType().toString().toUpperCase().contains("STRING")) {
 					res.set(f.getName().replace(".", "_"), String.valueOf(message.getField(f)));
 				} else if (f.getType().toString().toUpperCase().contains("BYTES")) {
@@ -98,19 +97,43 @@ public class ProtobufUtils {
 				} else if (f.getType().toString().toUpperCase().contains("MESSAGE")) {
 					type = "RECORD";
 					if (message.getAllFields().containsKey(f)) {
-						if (f.isRepeated()) {
-							List<TableRow> tr = ((List<Message>) message.getField(f)).stream().map(m -> makeTableRow(m))
-									.collect(Collectors.toList());
-							res.set(f.getName().replace(".", "_"), tr);
-						} else {
-							TableRow tr = makeTableRow((Message) message.getField(f));
-							res.set(f.getName().replace(".", "_"), tr);
-						}
+						TableRow tr = makeTableRow((Message) message.getField(f));
+						res.set(f.getName().replace(".", "_"), tr);
 					}
+				}
+			} else if (f.isRepeated()) {
+				if (f.getType().toString().toUpperCase().contains("STRING")) {
+					List<String> values = ((List<Object>) message.getField(f)).stream().map(e -> String.valueOf(e))
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
+				} else if (f.getType().toString().toUpperCase().contains("BYTES")) {
+					List<byte[]> values = ((List<Object>) message.getField(f)).stream().map(e -> (byte[]) e)
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
+				} else if (f.getType().toString().toUpperCase().contains("INT32")) {
+					List<Integer> values = ((List<Object>) message.getField(f)).stream().map(e -> (int) e)
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
+				} else if (f.getType().toString().toUpperCase().contains("INT64")) {
+					List<Long> values = ((List<Object>) message.getField(f)).stream().map(e -> (long) e)
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
+				} else if (f.getType().toString().toUpperCase().contains("BOOL")) {
+					List<Boolean> values = ((List<Object>) message.getField(f)).stream().map(e -> (boolean) e)
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
+				} else if (f.getType().toString().toUpperCase().contains("FLOAT")
+						|| f.getType().toString().toUpperCase().contains("DOUBLE")) {
+					List<Double> values = ((List<Object>) message.getField(f)).stream().map(e -> (double) e)
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
+				} else if (f.getType().toString().toUpperCase().contains("MESSAGE")) {
+					List<TableRow> values = ((List<Message>) message.getField(f)).stream().map(m -> makeTableRow(m))
+							.collect(Collectors.toList());
+					res.set(f.getName().replace(".", "_"), values);
 				}
 			}
 		}
-
 		return res;
 	}
 
@@ -224,8 +247,9 @@ public class ProtobufUtils {
 		return out;
 	}
 
-	public static List<Object> getValueFromProtobuffer(String field, Message message) {
-		List<Object> result = new ArrayList<Object>();
+	// Rewrite to more general (returning Object instead of List of Objects)
+	public static Object getValueFromProtobuffer(String field, Message message) {
+		Object res = null;
 		String[] fieldHierarchy = field.split("\\.");
 
 		FieldDescriptor q = message.getDescriptorForType().findFieldByName(fieldHierarchy[0]);
@@ -233,25 +257,108 @@ public class ProtobufUtils {
 		if (q.isRepeated()) {
 			if (fieldHierarchy.length > 1) {
 				List<Message> m = (List<Message>) message.getField(q);
-				m.stream().forEach(i -> result
-						.addAll(getValueFromProtobuffer(field.substring(fieldHierarchy[0].length() + 1), i)));
-
+				res = m.stream().map(i -> getValueFromProtobuffer(field.substring(fieldHierarchy[0].length() + 1), i))
+						.collect(Collectors.toList());
 			} else {
-				List<Object> m = (List<Object>) message.getField(q);
-				result.addAll(m);
-
+				res = (List<Object>) message.getField(q);
 			}
-		} else {
+		} else if (message.hasField(q)) {
 			if (fieldHierarchy.length > 1) {
 				Message m = (Message) message.getField(q);
-				result.addAll(getValueFromProtobuffer(field.substring(fieldHierarchy[0].length() + 1), m));
-
+				res = getValueFromProtobuffer(field.substring(fieldHierarchy[0].length() + 1), m);
 			} else {
-				Object o = message.getField(q);
-				result.add(o);
-
+				res = message.getField(q);
 			}
 		}
-		return result;
+
+		return res;
+	}
+
+	public static Message.Builder getBuilderForField(String field, Message.Builder message) {
+		Message.Builder res = null;
+		String[] fieldHierarchy = field.split("\\.");
+
+		FieldDescriptor q = message.getDescriptorForType().findFieldByName(fieldHierarchy[0]);
+
+		if (fieldHierarchy.length > 1) {
+			res = getBuilderForField(field.substring(fieldHierarchy[0].length() + 1), message.newBuilderForField(q));
+		} else {
+			res = message.newBuilderForField(q);
+		}
+
+		return res;
+	}
+
+	public static FieldDescriptor getDescriptorForField(String field, Message.Builder message) {
+		String[] fieldHierarchy = field.split("\\.");
+
+		FieldDescriptor q = message.getDescriptorForType().findFieldByName(fieldHierarchy[0]);
+
+		if (fieldHierarchy.length > 1) {
+			return getDescriptorForField(field.substring(fieldHierarchy[0].length() + 1),
+					message.newBuilderForField(q));
+		} else {
+			return q;
+		}
+	}
+
+	public static Message.Builder setBuilderForField(String field, Object value, Message.Builder message) {
+		String[] fieldHierarchy = field.split("\\.");
+
+		FieldDescriptor f = message.getDescriptorForType().findFieldByName(fieldHierarchy[0]);
+
+		if (value != null) {
+			if (fieldHierarchy.length > 1) {
+				if (f.isRepeated()) {
+					message.addRepeatedField(f, setBuilderForField(field.substring(fieldHierarchy[0].length() + 1),
+							value, message.newBuilderForField(f)).build());
+				} else {
+					message.setField(f, setBuilderForField(field.substring(fieldHierarchy[0].length() + 1), value,
+							message.newBuilderForField(f)).build());
+				}
+			} else {
+				if (f.isRepeated()) {
+					message.addRepeatedField(f, value);
+				} else {
+					message.setField(f, value);
+				}
+			}
+		}
+		return message;
+	}
+
+	public static Message.Builder mergeMessage(Message in, Message.Builder out) {
+		List<FieldDescriptor> fieldsOut = out.getDescriptorForType().getFields();
+
+		for (FieldDescriptor f : fieldsOut) {
+			if (in.getDescriptorForType().getFields().stream().map(m -> m.getName()).collect(Collectors.toList())
+					.contains(f.getName())
+					&& f.getType().toString()
+							.equals(in.getDescriptorForType().findFieldByName(f.getName()).getType().toString())) {
+				if (f.getType().toString().toUpperCase().contains("MESSAGE")) {
+					if (f.isRepeated()) {
+						List<Message> inMessages = (List<Message>) in
+								.getField(in.getDescriptorForType().findFieldByName(f.getName()));
+
+						List<Message> r = new ArrayList<Message>();
+						for (Message m : inMessages) {
+							Message toAdd = mergeMessage(m, out.newBuilderForField(f)).build();
+							r.add(toAdd);
+						}
+
+						out.setField(f, r);
+					} else {
+						Message r = mergeMessage(
+								(Message) in.getField(in.getDescriptorForType().findFieldByName(f.getName())),
+								((Message) out.getField(f)).newBuilderForType()).build();
+
+						out.setField(f, r);
+					}
+				} else if (getValueFromProtobuffer(f.getName(), in) != null) {
+					out.setField(f, getValueFromProtobuffer(f.getName(), in));
+				}
+			}
+		}
+		return out;
 	}
 }
